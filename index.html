@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Solar Plane: Pole to Pole</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f4f1ea;--fg:#1d1b17;--card:rgba(255,255,255,.88);--line:#c9c3b5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0e14;--fg:#e8e6df;--card:rgba(20,24,34,.88);--line:#3a4152}}
+:root[data-theme="dark"]{--bg:#0b0e14;--fg:#e8e6df;--card:rgba(20,24,34,.88);--line:#3a4152}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.35 system-ui,-apple-system,sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0;background:#05070c}
+canvas{display:block;touch-action:none}
+.card{position:fixed;left:8px;right:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+#info{top:calc(env(safe-area-inset-top,0px) + 8px);font-size:13px}
+#ctl{bottom:calc(env(safe-area-inset-bottom,0px) + 8px)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:3px 0}
+button,select{font:inherit;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:8px;padding:5px 10px}
+input[type=range]{flex:1;min-width:90px}
+.k{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.bad{color:#e5484d;font-weight:600}.ok{color:#2f9e63;font-weight:600}
+</style></head><body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div class="card" id="info">
+ <div><span class="k" style="background:#ff9f43"></span>Dawn line &nbsp;<span class="k" style="background:#c44dff"></span>Dusk line &nbsp;<span class="k" style="background:#ffd23f"></span>Track<br><span class="k" style="background:#4dd2ff"></span>South speed &nbsp;<span class="k" style="background:#5bd75b"></span>West speed &nbsp;<span class="k" style="background:#fff"></span>Heading &nbsp;<span class="k" style="background:#7cffb2"></span>Breakaway latitude</div>
+ <div id="rd"></div>
+</div>
+<div class="card" id="ctl">
+ <div class="row"><button id="play">Play</button><button id="rst">Reset</button>
+  <select id="spd"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select>
+  <button id="v1">Day side</button><button id="v2">From north</button><button id="pcam">Plane cam</button></div>
+ <div class="row"><span>Time</span><input id="tm" type="range" min="0" max="1000" value="0"></div>
+ <div class="row"><span>Airspeed <b id="vl"></b></span><input id="vs" type="range" min="400" max="650" step="5" value="500"></div>
+</div>
+<script>
+// Self-contained: no external libraries. Sun is fixed along +x, y is north.
+const D2R=Math.PI/180,R=1000/(15*D2R),$=id=>document.getElementById(id);
+const cvs=$('cv'),ctx=cvs.getContext('2d'),gl=document.createElement('canvas'),gctx=gl.getContext('2d');
+let AS=1,W,H,dpr,RS=.55,img,C,ST,tr,pts,ringPts=[[],[]];
+let az=.55,el=.45,dist=3.7,planeCam=false,camH=.5,simT=0,playing=false,mult=1,dirty=true,last=performance.now();
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],mul=(a,k)=>[a[0]*k,a[1]*k,a[2]*k];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const nrm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l]};
+const P=(ph,la,r)=>[r*Math.cos(ph)*Math.cos(la),r*Math.sin(ph),-r*Math.cos(ph)*Math.sin(la)];
+
+const dawn=[],dusk=[];
+for(let i=0;i<=90;i++){const s=Math.PI*i/90,s2=Math.PI+s;dawn.push([0,1.004*Math.cos(s),1.004*Math.sin(s)]);dusk.push([0,1.004*Math.cos(s2),1.004*Math.sin(s2)])}
+
+function build(V){
+ const N=3000,dph=Math.PI/N;let t=0,la=-Math.PI/2;
+ const T=[0],PH=[Math.PI/2],LA=[la],WS=[],VS=[];
+ for(let i=0;i<N;i++){
+  const ph=Math.PI/2-(i+.5)*dph,c=Math.cos(ph),a=1000*c;let w,vs,dl=0;
+  if(a<V){w=a;vs=Math.sqrt(V*V-a*a)}else{w=V*V/a;vs=V*Math.sqrt(1-V*V/(a*a));dl=(a-w)/(vs*c)*dph}
+  vs=Math.max(vs,1e-3);WS.push(w);VS.push(vs);t+=R*dph/vs;la+=dl;
+  T.push(t);PH.push(Math.PI/2-(i+1)*dph);LA.push(la);
+ }
+ tr={T,PH,LA,WS,VS,N,total:t,V,end:la};
+ pts=PH.map((p,i)=>P(p,LA[i],1.012));
+}
+function sample(t){
+ const {T,PH,LA,N}=tr;t=Math.min(Math.max(t,0),tr.total);
+ let lo=0,hi=N;while(hi-lo>1){const m=(lo+hi)>>1;if(T[m]<=t)lo=m;else hi=m}
+ const f=(t-T[lo])/((T[hi]-T[lo])||1);
+ return {ph:PH[lo]+(PH[hi]-PH[lo])*f,la:LA[lo]+(LA[hi]-LA[lo])*f,i:lo};
+}
+function setRings(pb){ringPts=[1,-1].map(sg=>{const a=[];for(let i=0;i<=120;i++)a.push(P(sg*pb,i/120*2*Math.PI,1.006));return a})}
+
+function update(){
+ const s=sample(simT),p=P(s.ph,s.la,1.03),up=nrm(p);
+ const k=Math.min(s.i,tr.N-1),w=tr.WS[k],vs=tr.VS[k];
+ const east=[-Math.sin(s.la),0,-Math.cos(s.la)],north=[-Math.sin(s.ph)*Math.cos(s.la),Math.cos(s.ph),Math.sin(s.ph)*Math.sin(s.la)];
+ const f=nrm(add(mul(north,-vs),mul(east,-w)));
+ const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=1000*Math.cos(s.ph)<tr.V;
+ ST={s,p,up,f,east,north,w,vs,dark};
+ const h=Math.floor(simT),m=Math.floor((simT-h)*60);
+ $('rd').innerHTML=`Elapsed ${h} h ${String(m).padStart(2,'0')} m &nbsp;|&nbsp; Latitude ${(s.ph/D2R).toFixed(1)}&deg; &nbsp;|&nbsp; ${((s.la/D2R)+90).toFixed(0)}&deg; past dawn line<br>Heading ${(180+hd).toFixed(0)}&deg; (${hd.toFixed(0)}&deg; west of south)<br>South <b>${vs.toFixed(0)}</b> mph &nbsp;|&nbsp; West <b>${w.toFixed(0)}</b> mph<br>`+
+  (dark?'<span class="bad">In darkness!</span>':hold?'Holding station (outrunning the ground)':'Crossing the tropics, drifting toward dusk');
+ $('tm').value=1000*simT/tr.total;dirty=true;
+}
+function setV(V){build(V);const pb=Math.acos(Math.min(1,V/1000));setRings(pb);const ok=tr.end<=Math.PI/2+0.01;
+ $('vl').innerHTML=V+' mph '+(ok?'<span class="ok">OK</span>':'<span class="bad">too slow</span>')+' &middot; breakaway &plusmn;'+(pb/D2R).toFixed(1)+'&deg;';
+ simT=Math.min(simT,tr.total);update()}
+
+function setCam(){
+ let c,fw,hint;
+ if(planeCam){c=mul(ST.up,1.03+camH);fw=mul(ST.up,-1);hint=ST.f}
+ else{c=[dist*Math.cos(el)*Math.cos(az),dist*Math.sin(el),dist*Math.cos(el)*Math.sin(az)];fw=nrm(mul(c,-1));hint=[0,1,0]}
+ const rt=nrm(cross(fw,hint)),uv=cross(rt,fw);
+ C={c,fw,rt,uv,f:(H/2)/Math.tan(20*D2R)};
+}
+const vis=p=>dot(p,C.c)>1&&dot(sub(p,C.c),C.fw)>.05;
+const proj=p=>{const d=sub(p,C.c),z=dot(d,C.fw);return [W/2+C.f*dot(d,C.rt)/z,H/2-C.f*dot(d,C.uv)/z]};
+
+function drawGlobe(theta){
+ const d=img.data;d.fill(0);
+ const cc=dot(C.c,C.c),al=Math.asin(Math.min(1,1/Math.sqrt(cc))),o=proj([0,0,0]);
+ const rr=Math.min(5000,C.f*Math.tan(Math.min(al,1.5))*1.3+6),gw=gl.width,gh=gl.height;
+ const x0=Math.max(0,Math.floor((o[0]-rr)*RS)),x1=Math.min(gw,Math.ceil((o[0]+rr)*RS));
+ const y0=Math.max(0,Math.floor((o[1]-rr)*RS)),y1=Math.min(gh,Math.ceil((o[1]+rr)*RS));
+ const cT=Math.cos(theta),sT=Math.sin(theta),[cx,cy,cz]=C.c,[fx,fy,fz]=C.fw,[rx,ry,rz]=C.rt,[ux,uy,uz]=C.uv,F=C.f;
+ for(let gy=y0;gy<y1;gy++){const b=H/2-(gy+.5)/RS;
+  for(let gx=x0;gx<x1;gx++){
+   const a=(gx+.5)/RS-W/2;
+   const dx=fx*F+rx*a+ux*b,dy=fy*F+ry*a+uy*b,dz=fz*F+rz*a+uz*b;
+   const A=dx*dx+dy*dy+dz*dz,B=cx*dx+cy*dy+cz*dz,disc=B*B-A*(cc-1);
+   if(disc<0)continue;
+   const t=(-B-Math.sqrt(disc))/A;if(t<0)continue;
+   const nx=cx+t*dx,ny=cy+t*dy,nz=cz+t*dz;
+   const lat=Math.asin(Math.max(-1,Math.min(1,ny)))/D2R,lon=Math.atan2(-(nx*sT+nz*cT),nx*cT-nz*sT)/D2R;
+   let r=28,g=93,bl=138;
+   if((Math.floor((lon+180)/15)+Math.floor((lat+90)/15))&1){r=46;g=106;bl=146}
+   const m1=((lat+90)%15+15)%15,m2=((lon+180)%15+15)%15,cl=Math.max(Math.cos(lat*D2R),.2);
+   if(Math.min(m1,15-m1)<.5||Math.min(m2,15-m2)<.5/cl){r=r*.65+89;g=g*.65+89;bl=bl*.65+89}
+   if(Math.abs(lat)<.7){r=g=bl=255}
+   if(Math.abs(lon)<.8/cl){r=255;g=90;bl=90}
+   const k=Math.max(0,Math.min(1,nx/.004+.5)),dm=.8+.2*Math.max(nx,0);
+   r=r*(.45+(dm-.45)*k);g=g*(.5+(dm-.5)*k);bl=bl*(.62+(dm-.62)*k);
+   const i=(gy*gw+gx)*4;d[i]=r;d[i+1]=g;d[i+2]=bl;d[i+3]=255;
+  }}
+}
+function poly(arr,step,to,col,w,al){
+ ctx.strokeStyle=col;ctx.lineWidth=w;ctx.globalAlpha=al;ctx.beginPath();let pen=false;
+ for(let i=0;i<=to;i+=step){const p=arr[i];if(vis(p)){const q=proj(p);if(pen)ctx.lineTo(q[0],q[1]);else{ctx.moveTo(q[0],q[1]);pen=true}}else pen=false}
+ ctx.stroke();ctx.globalAlpha=1;
+}
+function seg(a,b,col,w){if(!vis(a)||!vis(b))return;const q=proj(a),r=proj(b);ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(q[0],q[1]);ctx.lineTo(r[0],r[1]);ctx.stroke()}
+function arrow(o,dir,sp,col){
+ const L=.32*sp/500*AS;if(L<.004||!vis(o))return;
+ const q0=proj(o),q1=proj(add(o,mul(dir,L))),dx=q1[0]-q0[0],dy=q1[1]-q0[1],len=Math.hypot(dx,dy);if(len<2)return;
+ const an=Math.atan2(dy,dx),hl=Math.min(11,len*.5);
+ ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(q0[0],q0[1]);ctx.lineTo(q1[0],q1[1]);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(q1[0],q1[1]);ctx.lineTo(q1[0]-hl*Math.cos(an-.4),q1[1]-hl*Math.sin(an-.4));ctx.lineTo(q1[0]-hl*Math.cos(an+.4),q1[1]-hl*Math.sin(an+.4));ctx.closePath();ctx.fill();
+}
+function draw(){
+ if(!ST)return;setCam();AS=planeCam?Math.min(1,camH/1.5):1;
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#05070c';ctx.fillRect(0,0,W,H);
+ drawGlobe(15*D2R*simT);gctx.putImageData(img,0,0);ctx.drawImage(gl,0,0,W,H);
+ ctx.lineCap='round';ctx.lineJoin='round';
+ poly(dawn,1,90,'#ff9f43',2,1);poly(dusk,1,90,'#c44dff',2,1);
+ for(const r of ringPts)poly(r,1,120,'#7cffb2',1.5,1);
+ poly(pts,4,tr.N,'#ffd23f',1.5,.25);poly(pts,3,ST.s.i,'#ffd23f',2.5,1);
+ const {p,up,f,east,north,w,vs}=ST,wd=nrm(cross(up,f));
+ const o=add(p,mul(up,.012));
+ arrow(o,mul(north,-1),vs,'#4dd2ff');arrow(o,mul(east,-1),w,'#5bd75b');arrow(o,f,Math.hypot(vs,w),'#ffffff');
+ if(vis(p)){
+  const Q=(x,y)=>proj(add(p,add(mul(f,x),mul(wd,y)))); // x forward, y to the side
+  const poly3=(v,fill)=>{ctx.beginPath();v.forEach((q,i)=>i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]));ctx.closePath();ctx.fillStyle=fill;ctx.fill();ctx.strokeStyle='rgba(0,0,0,.55)';ctx.lineWidth=1;ctx.stroke()};
+  const wc=ST.dark?'#e5484d':'#ffd23f';
+  poly3([Q(.012,.01),Q(-.006,.095),Q(-.024,.095),Q(-.014,.01),Q(-.014,-.01),Q(-.024,-.095),Q(-.006,-.095),Q(.012,-.01)],wc);
+  poly3([Q(-.03,.008),Q(-.04,.032),Q(-.048,.032),Q(-.044,.008),Q(-.044,-.008),Q(-.048,-.032),Q(-.04,-.032),Q(-.03,-.008)],wc);
+  poly3([Q(.055,0),Q(.04,.009),Q(-.03,.007),Q(-.05,0),Q(-.03,-.007),Q(.04,-.009)],'#ffffff');
+  poly3([Q(.062,0),Q(.048,.006),Q(.048,-.006)],'#e5484d');
+ }
+}
+function loop(now){
+ const dt=(now-last)/1000;last=now;
+ if(playing){simT+=dt*mult*tr.total/40;if(simT>=tr.total){simT=tr.total;playing=false;$('play').textContent='Replay'}update()}
+ if(dirty){dirty=false;draw()}
+ requestAnimationFrame(loop);
+}
+function resize(){
+ W=innerWidth;H=innerHeight;RS=Math.min(.8,Math.sqrt(450000/(W*H)));dpr=Math.min(devicePixelRatio||1,2);
+ cvs.width=W*dpr;cvs.height=H*dpr;cvs.style.width=W+'px';cvs.style.height=H+'px';
+ gl.width=Math.ceil(W*RS);gl.height=Math.ceil(H*RS);img=gctx.createImageData(gl.width,gl.height);dirty=true;
+}
+addEventListener('resize',resize);
+const ptr=new Map();let pd=0;
+cvs.addEventListener('pointerdown',e=>{ptr.set(e.pointerId,e);cvs.setPointerCapture(e.pointerId)});
+cvs.addEventListener('pointermove',e=>{
+ const o=ptr.get(e.pointerId);if(!o)return;
+ if(ptr.size===1&&!planeCam){az+=(e.clientX-o.clientX)*.006;el=Math.max(-1.45,Math.min(1.45,el+(e.clientY-o.clientY)*.006))}
+ ptr.set(e.pointerId,e);
+ if(ptr.size===2){const [a,b]=[...ptr.values()],d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+  if(pd){if(planeCam)camH=Math.max(.15,Math.min(3,camH*pd/d));else dist=Math.max(1.8,Math.min(9,dist*pd/d))}pd=d}
+ dirty=true});
+const pup=e=>{ptr.delete(e.pointerId);pd=0};
+cvs.addEventListener('pointerup',pup);cvs.addEventListener('pointercancel',pup);
+cvs.addEventListener('wheel',e=>{const k=1+e.deltaY*.001;if(planeCam)camH=Math.max(.15,Math.min(3,camH*k));else dist=Math.max(1.8,Math.min(9,dist*k));dirty=true},{passive:true});
+
+$('play').onclick=()=>{if(simT>=tr.total-1e-6)simT=0;playing=!playing;$('play').textContent=playing?'Pause':'Play'};
+$('rst').onclick=()=>{playing=false;simT=0;$('play').textContent='Play';update()};
+$('spd').onchange=e=>mult=+e.target.value;
+$('tm').oninput=e=>{playing=false;$('play').textContent='Play';simT=e.target.value/1000*tr.total;update()};
+$('vs').oninput=e=>setV(+e.target.value);
+const orbit=(a,e)=>{planeCam=false;$('pcam').style.background='transparent';az=a;el=e;dirty=true};
+$('v1').onclick=()=>orbit(.55,.45);$('v2').onclick=()=>orbit(0,1.4);
+$('pcam').onclick=()=>{planeCam=!planeCam;$('pcam').style.background=planeCam?'var(--line)':'transparent';dirty=true};
+resize();setV(500);requestAnimationFrame(loop);
+</script></body></html>
