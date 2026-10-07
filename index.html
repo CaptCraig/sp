@@ -45,17 +45,28 @@ const P=(ph,la,r)=>[r*Math.cos(ph)*Math.cos(la),r*Math.sin(ph),-r*Math.cos(ph)*M
 const dawn=[],dusk=[];
 for(let i=0;i<=90;i++){const s=Math.PI*i/90,s2=Math.PI+s;dawn.push([0,1.004*Math.cos(s),1.004*Math.sin(s)]);dusk.push([0,1.004*Math.cos(s2),1.004*Math.sin(s2)])}
 
-function build(V){
- const N=3000,dph=Math.PI/N;let t=0,la=-Math.PI/2;
+// Path law: hold on the dawn/dusk line poleward of the breakaway latitude; between, w = q*V^2/(1000 cos(lat)).
+// q=1 is the minimum-drift path (needed at 500 mph); for V>500, q<1 is chosen so the drift is exactly 180 deg (fastest trip).
+function sim(V,q,N){
+ const dph=Math.PI/N,cb=V*Math.sqrt(q)/1000;let t=0,la=-Math.PI/2;
  const T=[0],PH=[Math.PI/2],LA=[la],WS=[],VS=[];
  for(let i=0;i<N;i++){
   const ph=Math.PI/2-(i+.5)*dph,c=Math.cos(ph),a=1000*c;let w,vs,dl=0;
-  if(a<V){w=a;vs=Math.sqrt(V*V-a*a)}else{w=V*V/a;vs=V*Math.sqrt(1-V*V/(a*a));dl=(a-w)/(vs*c)*dph}
+  if(c<=cb){w=a;vs=Math.sqrt(Math.max(V*V-a*a,0))}
+  else{w=q*V*V/a;vs=Math.sqrt(V*V-w*w);dl=(a-w)/(vs*c)*dph}
   vs=Math.max(vs,1e-3);WS.push(w);VS.push(vs);t+=R*dph/vs;la+=dl;
   T.push(t);PH.push(Math.PI/2-(i+1)*dph);LA.push(la);
  }
- tr={T,PH,LA,WS,VS,N,total:t,V,end:la};
- pts=PH.map((p,i)=>P(p,LA[i],1.012));
+ return {T,PH,LA,WS,VS,N,total:t,V,end:la,q,cb,phi1:Math.acos(Math.min(1,cb))};
+}
+function build(V){
+ let q=1;
+ if(sim(V,1,1500).end<Math.PI/2-1e-4){
+  if(sim(V,0,1500).end<=Math.PI/2)q=0;
+  else{let lo=0,hi=1;for(let k=0;k<40;k++){const m=(lo+hi)/2;if(sim(V,m,1500).end>Math.PI/2)lo=m;else hi=m}q=hi}
+ }
+ tr=sim(V,q,3000);
+ pts=tr.PH.map((p,i)=>P(p,tr.LA[i],1.012));
 }
 function sample(t){
  const {T,PH,LA,N}=tr;t=Math.min(Math.max(t,0),tr.total);
@@ -70,14 +81,14 @@ function update(){
  const k=Math.min(s.i,tr.N-1),w=tr.WS[k],vs=tr.VS[k];
  const east=[-Math.sin(s.la),0,-Math.cos(s.la)],north=[-Math.sin(s.ph)*Math.cos(s.la),Math.cos(s.ph),Math.sin(s.ph)*Math.sin(s.la)];
  const f=nrm(add(mul(north,-vs),mul(east,-w)));
- const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=1000*Math.cos(s.ph)<tr.V;
+ const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=Math.cos(s.ph)<=tr.cb;
  ST={s,p,up,f,east,north,w,vs,dark};
  const h=Math.floor(simT),m=Math.floor((simT-h)*60);
  $('rd').innerHTML=`Elapsed ${h} h ${String(m).padStart(2,'0')} m &nbsp;|&nbsp; Latitude ${(s.ph/D2R).toFixed(1)}&deg; &nbsp;|&nbsp; ${((s.la/D2R)+90).toFixed(0)}&deg; past dawn line<br>Heading ${(180+hd).toFixed(0)}&deg; (${hd.toFixed(0)}&deg; west of south)<br>South <b>${vs.toFixed(0)}</b> mph &nbsp;|&nbsp; West <b>${w.toFixed(0)}</b> mph<br>`+
-  (dark?'<span class="bad">In darkness!</span>':hold?'Holding station (outrunning the ground)':'Crossing the tropics, drifting toward dusk');
+  (dark?'<span class="bad">In darkness!</span>':hold?(s.la<0?'Holding on the dawn line':'Holding on the dusk line'):'Breakaway: crossing the daylit side, drifting toward dusk');
  $('tm').value=1000*simT/tr.total;dirty=true;
 }
-function setV(V){build(V);const pb=Math.acos(Math.min(1,V/1000));setRings(pb);const ok=tr.end<=Math.PI/2+0.01;
+function setV(V){build(V);const pb=tr.phi1;setRings(pb);const ok=tr.end<=Math.PI/2+0.01;
  $('vl').innerHTML=V+' mph '+(ok?'<span class="ok">OK</span>':'<span class="bad">too slow</span>')+' &middot; breakaway &plusmn;'+(pb/D2R).toFixed(1)+'&deg;';
  simT=Math.min(simT,tr.total);update()}
 
