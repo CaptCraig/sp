@@ -26,8 +26,8 @@ input[type=range]{flex:1;min-width:90px}
 </div>
 <div class="card" id="ctl">
  <div class="row"><button id="play">Play</button><button id="rst">Reset</button>
-  <select id="spd"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select>
-  <button id="v1">Day side</button><button id="v2">From north</button><button id="pcam">Plane cam</button></div>
+  <select id="spd"><option value="0.25">0.25×</option><option value="1" selected>1×</option><option value="4">4×</option></select>
+  <button id="v1">Day side</button><button id="v2">From north</button><button id="pcam">Plane cam</button><button id="pth">Path: Full drift</button></div>
  <div class="row"><span>Time</span><input id="tm" type="range" min="0" max="1000" value="0"></div>
  <div class="row"><span>Airspeed <b id="vl"></b></span><input id="vs" type="range" min="400" max="650" step="5" value="500"></div>
 </div>
@@ -49,17 +49,34 @@ for(let i=0;i<=90;i++){const s=Math.PI*i/90,s2=Math.PI+s;dawn.push([0,1.004*Math
 // q=1 is the minimum-drift path (needed at 500 mph); for V>500, q<1 is chosen so the drift is exactly 180 deg (fastest trip).
 function sim(V,q,N){
  const dph=Math.PI/N,cb=V*Math.sqrt(q)/1000;let t=0,la=-Math.PI/2;
- const T=[0],PH=[Math.PI/2],LA=[la],WS=[],VS=[];
+ const T=[0],PH=[Math.PI/2],LA=[la],WS=[],VS=[],HD=[];
  for(let i=0;i<N;i++){
-  const ph=Math.PI/2-(i+.5)*dph,c=Math.cos(ph),a=1000*c;let w,vs,dl=0;
+  const ph=Math.PI/2-(i+.5)*dph,c=Math.cos(ph),a=1000*c;let w,vs,dl=0;HD.push(c<=cb);
   if(c<=cb){w=a;vs=Math.sqrt(Math.max(V*V-a*a,0))}
   else{w=q*V*V/a;vs=Math.sqrt(V*V-w*w);dl=(a-w)/(vs*c)*dph}
   vs=Math.max(vs,1e-3);WS.push(w);VS.push(vs);t+=R*dph/vs;la+=dl;
   T.push(t);PH.push(Math.PI/2-(i+1)*dph);LA.push(la);
  }
- return {T,PH,LA,WS,VS,N,total:t,V,end:la,q,cb,phi1:Math.acos(Math.min(1,cb))};
+ return {T,PH,LA,WS,VS,HD,N,total:t,V,end:la,q,cb,phi1:Math.acos(Math.min(1,cb)),mode:'drift'};
 }
+// "Straight south": hold the dawn line to the breakaway latitude, fly due south (no westward component) until the dusk line,
+// then hold the dusk line if the ground there is slower than V; otherwise the plane cannot hold and drifts into darkness.
+function simSouth(V,N){
+ const dph=Math.PI/N,pb=Math.acos(Math.min(1,V/1000)),pN=Math.max(pb,Math.PI/2*V/1000);
+ let t=0,la=-Math.PI/2;const T=[0],PH=[Math.PI/2],LA=[la],WS=[],VS=[],HD=[];
+ for(let i=0;i<N;i++){
+  const ph=Math.PI/2-(i+.5)*dph,c=Math.cos(ph),a=1000*c,hold=a<V;let w,vs,hd=false;
+  if(ph>pN){w=a;vs=Math.sqrt(Math.max(V*V-a*a,0));hd=true}
+  else if(la>=Math.PI/2-1e-12&&hold){w=a;vs=Math.sqrt(V*V-a*a);hd=true}
+  else{w=0;vs=V;const dl=1000/V*dph;la+=dl;if(la>=Math.PI/2&&hold)la=Math.PI/2}
+  vs=Math.max(vs,1e-3);WS.push(w);VS.push(vs);HD.push(hd);t+=R*dph/vs;
+  T.push(t);PH.push(Math.PI/2-(i+1)*dph);LA.push(la);
+ }
+ return {T,PH,LA,WS,VS,HD,N,total:t,V,end:la,q:null,cb:0,phi1:pN,mode:'south'};
+}
+let pathMode='drift';
 function build(V){
+ if(pathMode==='south'){tr=simSouth(V,3000);pts=tr.PH.map((p,i)=>P(p,tr.LA[i],1.012));return}
  let q=1;
  if(sim(V,1,1500).end<Math.PI/2-1e-4){
   if(sim(V,0,1500).end<=Math.PI/2)q=0;
@@ -81,11 +98,11 @@ function update(){
  const k=Math.min(s.i,tr.N-1),w=tr.WS[k],vs=tr.VS[k];
  const east=[-Math.sin(s.la),0,-Math.cos(s.la)],north=[-Math.sin(s.ph)*Math.cos(s.la),Math.cos(s.ph),Math.sin(s.ph)*Math.sin(s.la)];
  const f=nrm(add(mul(north,-vs),mul(east,-w)));
- const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=Math.cos(s.ph)<=tr.cb;
+ const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=tr.HD[k];
  ST={s,p,up,f,east,north,w,vs,dark};
  const h=Math.floor(simT),m=Math.floor((simT-h)*60);
  $('rd').innerHTML=`Elapsed ${h} h ${String(m).padStart(2,'0')} m &nbsp;|&nbsp; Latitude ${(s.ph/D2R).toFixed(1)}&deg; &nbsp;|&nbsp; ${((s.la/D2R)+90).toFixed(0)}&deg; past dawn line<br>Heading ${(180+hd).toFixed(0)}&deg; (${hd.toFixed(0)}&deg; west of south)<br>South <b>${vs.toFixed(0)}</b> mph &nbsp;|&nbsp; West <b>${w.toFixed(0)}</b> mph<br>`+
-  (dark?'<span class="bad">In darkness!</span>':hold?(s.la<0?'Holding on the dawn line':'Holding on the dusk line'):'Breakaway: crossing the daylit side, drifting toward dusk');
+  (dark?'<span class="bad">In darkness!</span>':hold?(s.la<0?'Holding on the dawn line':'Holding on the dusk line'):(tr.mode==='south'?'Flying due south, drifting toward dusk':'Breakaway: crossing the daylit side, drifting toward dusk'));
  $('tm').value=1000*simT/tr.total;dirty=true;
 }
 function setV(V){build(V);const pb=tr.phi1;setRings(pb);const ok=tr.end<=Math.PI/2+0.01;
@@ -200,6 +217,7 @@ cvs.addEventListener('wheel',e=>{const k=1+e.deltaY*.001;if(planeCam)camH=Math.m
 
 $('play').onclick=()=>{if(simT>=tr.total-1e-6)simT=0;playing=!playing;$('play').textContent=playing?'Pause':'Play'};
 $('rst').onclick=()=>{playing=false;simT=0;$('play').textContent='Play';update()};
+$('pth').onclick=()=>{pathMode=pathMode==='drift'?'south':'drift';$('pth').textContent=pathMode==='drift'?'Path: Full drift':'Path: Due south';playing=false;$('play').textContent='Play';simT=0;setV(+$('vs').value)};
 $('spd').onchange=e=>mult=+e.target.value;
 $('tm').oninput=e=>{playing=false;$('play').textContent='Play';simT=e.target.value/1000*tr.total;update()};
 $('vs').oninput=e=>setV(+e.target.value);
