@@ -21,14 +21,13 @@ input[type=range]{flex:1;min-width:90px}
 </style></head><body>
 <div id="stage"><canvas id="cv"></canvas></div>
 <div class="card" id="info">
- <div><span class="k" style="background:#ff9f43"></span>Dawn line &nbsp;<span class="k" style="background:#c44dff"></span>Dusk line &nbsp;<span class="k" style="background:#ffd23f"></span>Track<br><span class="k" style="background:#4dd2ff"></span>South speed &nbsp;<span class="k" style="background:#5bd75b"></span>West speed &nbsp;<span class="k" style="background:#fff"></span>Heading &nbsp;<span class="k" style="background:#7cffb2"></span>Breakaway latitude</div>
+ <div><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#ff9f43"></span>Dawn line</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#c44dff"></span>Dusk line</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#7cffb2"></span>Breakaway latitudes</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#ff5a5a"></span>Beginning longitude</span><br><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#ffd23f"></span>Track</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#fff"></span>Heading/speed</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#4dd2ff"></span>South speed</span><span style="white-space:nowrap;margin-right:16px"><span class="k" style="background:#5bd75b"></span>West speed</span></div>
  <div id="rd"></div>
 </div>
 <div class="card" id="ctl">
  <div class="row"><button id="play">Play</button><button id="rst">Reset</button>
   <select id="spd"><option value="0.25">0.25×</option><option value="1" selected>1×</option><option value="4">4×</option></select>
-  <button id="v1">Day side</button><button id="v2">From north</button><button id="pcam">Plane cam</button><button id="pth">Path: Full drift</button></div>
- <div class="row"><span>Time</span><input id="tm" type="range" min="0" max="1000" value="0"></div>
+  <button id="v1">Day side</button><button id="v2">From north</button><button id="pcam">Plane cam</button><button id="pth">Path: Full drift</button><span id="clk" style="margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums">0 h 00 m</span></div>
  <div class="row"><span>Airspeed <b id="vl"></b></span><input id="vs" type="range" min="400" max="650" step="5" value="500"></div>
 </div>
 <script>
@@ -101,9 +100,9 @@ function update(){
  const dark=s.la>Math.PI/2+1e-3,hd=Math.atan2(w,vs)/D2R,hold=tr.HD[k];
  ST={s,p,up,f,east,north,w,vs,dark};
  const h=Math.floor(simT),m=Math.floor((simT-h)*60);
- $('rd').innerHTML=`Elapsed ${h} h ${String(m).padStart(2,'0')} m &nbsp;|&nbsp; Latitude ${(s.ph/D2R).toFixed(1)}&deg; &nbsp;|&nbsp; ${((s.la/D2R)+90).toFixed(0)}&deg; past dawn line<br>Heading ${(180+hd).toFixed(0)}&deg; (${hd.toFixed(0)}&deg; west of south)<br>South <b>${vs.toFixed(0)}</b> mph &nbsp;|&nbsp; West <b>${w.toFixed(0)}</b> mph<br>`+
+ $('rd').innerHTML=`Latitude ${(s.ph/D2R).toFixed(1)}&deg; &nbsp;|&nbsp; ${((s.la/D2R)+90).toFixed(0)}&deg; past dawn line<br>Heading ${(180+hd).toFixed(0)}&deg; (${hd.toFixed(0)}&deg; west of south)<br>South <b>${vs.toFixed(0)}</b> mph &nbsp;|&nbsp; West <b>${w.toFixed(0)}</b> mph<br>`+
   (dark?'<span class="bad">In darkness!</span>':hold?(s.la<0?'Holding on the dawn line':'Holding on the dusk line'):(tr.mode==='south'?'Flying due south, drifting toward dusk':'Breakaway: crossing the daylit side, drifting toward dusk'));
- $('tm').value=1000*simT/tr.total;dirty=true;
+ $('clk').textContent=`${h} h ${String(m).padStart(2,'0')} m`;dirty=true;
 }
 function setV(V){build(V);const pb=tr.phi1;setRings(pb);const ok=tr.end<=Math.PI/2+0.01;
  $('vl').innerHTML=V+' mph '+(ok?'<span class="ok">OK</span>':'<span class="bad">too slow</span>')+' &middot; breakaway &plusmn;'+(pb/D2R).toFixed(1)+'&deg;';
@@ -172,8 +171,8 @@ function arrow(o,dir,sp,col){
 function draw(){
  if(!ST)return;setCam();AS=planeCam?Math.min(1,camH/1.5):1;
  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#05070c';ctx.fillRect(0,0,W,H);
- drawGlobe(15*D2R*simT);gctx.putImageData(img,0,0);ctx.drawImage(gl,0,0,W,H);
- ctx.lineCap='round';ctx.lineJoin='round';drawGrid(15*D2R*simT);
+ drawGlobe((15*D2R*simT-Math.PI/2));gctx.putImageData(img,0,0);ctx.drawImage(gl,0,0,W,H);
+ ctx.lineCap='round';ctx.lineJoin='round';drawGrid((15*D2R*simT-Math.PI/2));
  poly(dawn,1,90,'#ff9f43',2,1);poly(dusk,1,90,'#c44dff',2,1);
  for(const r of ringPts)poly(r,1,120,'#7cffb2',1.5,1);
  poly(pts,4,tr.N,'#ffd23f',1.5,.25);poly(pts,3,ST.s.i,'#ffd23f',2.5,1);
@@ -219,7 +218,6 @@ $('play').onclick=()=>{if(simT>=tr.total-1e-6)simT=0;playing=!playing;$('play').
 $('rst').onclick=()=>{playing=false;simT=0;$('play').textContent='Play';update()};
 $('pth').onclick=()=>{pathMode=pathMode==='drift'?'south':'drift';$('pth').textContent=pathMode==='drift'?'Path: Full drift':'Path: Due south';playing=false;$('play').textContent='Play';simT=0;setV(+$('vs').value)};
 $('spd').onchange=e=>mult=+e.target.value;
-$('tm').oninput=e=>{playing=false;$('play').textContent='Play';simT=e.target.value/1000*tr.total;update()};
 $('vs').oninput=e=>setV(+e.target.value);
 const orbit=(a,e)=>{planeCam=false;$('pcam').style.background='transparent';az=a;el=e;dirty=true};
 $('v1').onclick=()=>orbit(.55,.45);$('v2').onclick=()=>orbit(0,1.4);
